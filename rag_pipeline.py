@@ -1,36 +1,32 @@
 """
-RAG PDF Ingestion Script
-========================
-
-Builds a production-grade RAG ingestion pipeline for a rule book PDF.
+Multi-Year Rulebook RAG System
+==============================
 
 Features
 --------
-✔ Extracts both TEXT and TABLES
-✔ Keeps tables intact (never split across chunks)
-✔ Semantic-aware recursive chunking
-✔ Rich metadata (page, section, chunk type)
-✔ Uses high quality embeddings
-✔ Persistent ChromaDB vector store
+✔ Ingest multiple PDFs (2024 + 2025)
+✔ Extract text + tables
+✔ Semantic chunking
+✔ Metadata aware retrieval
+✔ Query routing by year
+✔ Compare rules across years
 
-Author: Production RAG Template
 """
 
-# -----------------------------
-# Required installs
-# -----------------------------
+# -------------------------------------------------
+# Install dependencies
+# -------------------------------------------------
 # pip install langchain langchain-community langchain-chroma
 # pip install chromadb sentence-transformers
-# pip install pymupdf pdfplumber
-# pip install tqdm
+# pip install pymupdf pdfplumber tqdm
 
 
 import os
 import re
 import uuid
-from typing import List, Dict
+from typing import List
 
-import fitz  # PyMuPDF
+import fitz
 import pdfplumber
 from tqdm import tqdm
 
@@ -40,37 +36,31 @@ from langchain_chroma import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
 
 
-# ----------------------------------------
+# -------------------------------------------------
 # Configuration
-# ----------------------------------------
+# -------------------------------------------------
 
-PDF_PATH = "./pdf/tata_ipl_2024.pdf"
+PDF_FILES = {
+    "ipl_2024": "./pdf/tata_ipl_2024.pdf",
+    "ipl_2025": "./pdf/tata_ipl_2025.pdf"
+}
+
 CHROMA_PATH = "./chroma_db"
 
-# Chunking parameters tuned for rule documents
 CHUNK_SIZE = 900
 CHUNK_OVERLAP = 150
 
 
-# ----------------------------------------
-# Section detection helper
-# ----------------------------------------
+# -------------------------------------------------
+# Section Detection
+# -------------------------------------------------
 
-def detect_section_heading(text: str) -> str:
-    """
-    Detect possible section headings.
-
-    Many rule books contain headings like:
-    1. Introduction
-    2.3 Compliance Rules
-    Rule 4: Eligibility
-
-    This function tries to detect them.
-    """
+def detect_section_heading(text: str):
 
     lines = text.split("\n")
 
     for line in lines[:5]:
+
         line = line.strip()
 
         if len(line) < 120 and re.match(r"^(\d+(\.\d+)*)\s+.+", line):
@@ -82,20 +72,18 @@ def detect_section_heading(text: str) -> str:
     return "unknown_section"
 
 
-# ----------------------------------------
-# Extract text using PyMuPDF
-# ----------------------------------------
+# -------------------------------------------------
+# Extract Text
+# -------------------------------------------------
 
-def extract_text(pdf_path: str) -> List[Document]:
-    """
-    Extract raw text from PDF with page metadata.
-    """
+def extract_text(pdf_path: str, rule_year: str) -> List[Document]:
 
     documents = []
 
     doc = fitz.open(pdf_path)
 
-    for page_num in tqdm(range(len(doc)), desc="Extracting text"):
+    for page_num in tqdm(range(len(doc)), desc=f"Extracting text ({rule_year})"):
+
         page = doc.load_page(page_num)
 
         text = page.get_text()
@@ -112,7 +100,8 @@ def extract_text(pdf_path: str) -> List[Document]:
                     "page": page_num + 1,
                     "chunk_type": "text",
                     "section": section,
-                    "source": "rule_book"
+                    "rule_year": rule_year,
+                    "source": "ipl_rule_book"
                 }
             )
         )
@@ -120,17 +109,19 @@ def extract_text(pdf_path: str) -> List[Document]:
     return documents
 
 
-# ----------------------------------------
-# Extract tables using pdfplumber
-# ----------------------------------------
+# -------------------------------------------------
+# Extract Tables
+# -------------------------------------------------
 
-def extract_tables(pdf_path: str) -> List[Document]:
+def extract_tables(pdf_path: str, rule_year: str) -> List[Document]:
 
     table_docs = []
 
     with pdfplumber.open(pdf_path) as pdf:
 
-        for page_num, page in enumerate(tqdm(pdf.pages, desc="Extracting tables")):
+        for page_num, page in enumerate(
+            tqdm(pdf.pages, desc=f"Extracting tables ({rule_year})")
+        ):
 
             tables = page.extract_tables()
 
@@ -139,8 +130,8 @@ def extract_tables(pdf_path: str) -> List[Document]:
                 if not table:
                     continue
 
-                header = [str(c) if c is not None else "" for c in table[0]]
-                rows = [[str(c) if c is not None else "" for c in row] for row in table[1:]]
+                header = [str(c) if c else "" for c in table[0]]
+                rows = [[str(c) if c else "" for c in row] for row in table[1:]]
 
                 md = "| " + " | ".join(header) + " |\n"
                 md += "| " + " | ".join(["---"] * len(header)) + " |\n"
@@ -155,7 +146,8 @@ def extract_tables(pdf_path: str) -> List[Document]:
                             "page": page_num + 1,
                             "chunk_type": "table",
                             "section": "table_data",
-                            "source": "rule_book"
+                            "rule_year": rule_year,
+                            "source": "ipl_rule_book"
                         }
                     )
                 )
@@ -163,26 +155,16 @@ def extract_tables(pdf_path: str) -> List[Document]:
     return table_docs
 
 
-# ----------------------------------------
-# Chunk text documents
-# ----------------------------------------
+# -------------------------------------------------
+# Chunk Text
+# -------------------------------------------------
 
 def chunk_text_documents(docs: List[Document]) -> List[Document]:
-    """
-    Split long text into semantic chunks.
-
-    Tables are not passed here (handled separately).
-    """
 
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=CHUNK_SIZE,
         chunk_overlap=CHUNK_OVERLAP,
-        separators=[
-            "\n\n",
-            "\n",
-            ". ",
-            " "
-        ]
+        separators=["\n\n", "\n", ". ", " "],
     )
 
     chunks = []
@@ -203,20 +185,11 @@ def chunk_text_documents(docs: List[Document]) -> List[Document]:
     return chunks
 
 
-# ----------------------------------------
-# Initialize embedding model
-# ----------------------------------------
+# -------------------------------------------------
+# Embedding Model
+# -------------------------------------------------
 
 def load_embedding_model():
-    """
-    Load high quality embedding model.
-
-    Model: all-mpnet-base-v2
-    Reason:
-    - Strong semantic retrieval
-    - Excellent for long documents
-    - Open source
-    """
 
     embeddings = HuggingFaceEmbeddings(
         model_name="sentence-transformers/all-mpnet-base-v2"
@@ -225,24 +198,18 @@ def load_embedding_model():
     return embeddings
 
 
-# ----------------------------------------
-# Store vectors in ChromaDB
-# ----------------------------------------
+# -------------------------------------------------
+# Store in ChromaDB
+# -------------------------------------------------
 
 def store_in_chroma(documents, embedding_model):
 
     os.makedirs(CHROMA_PATH, exist_ok=True)
 
-    # Filter empty documents
     clean_docs = [
         doc for doc in documents
         if doc.page_content and doc.page_content.strip()
     ]
-
-    if len(clean_docs) == 0:
-        raise ValueError("No valid documents found after filtering empty chunks.")
-
-    print(f"Storing {len(clean_docs)} valid chunks in ChromaDB")
 
     ids = [str(uuid.uuid4()) for _ in clean_docs]
 
@@ -253,82 +220,154 @@ def store_in_chroma(documents, embedding_model):
         ids=ids
     )
 
-    # vectordb.persist()
+    return vectordb
+
+
+# -------------------------------------------------
+# Detect Year in Query
+# -------------------------------------------------
+
+def detect_rule_year(query: str):
+
+    query = query.lower()
+
+    if "2024" in query:
+        return "ipl_2024"
+
+    if "2025" in query:
+        return "ipl_2025"
+
+    if "latest" in query or "current" in query:
+        return "ipl_2025"
+
+    # default → latest rule
+    return "ipl_2025"
+
+
+# -------------------------------------------------
+# Detect comparison query
+# -------------------------------------------------
+
+def is_comparison_query(query):
+
+    query = query.lower()
+
+    keywords = [
+        "compare",
+        "difference",
+        "change",
+        "changed",
+        "vs"
+    ]
+
+    return any(k in query for k in keywords)
+
+
+# -------------------------------------------------
+# Retrieval Engine
+# -------------------------------------------------
+
+def retrieve_documents(query, vectordb):
+
+    if is_comparison_query(query):
+
+        print("Comparison query detected\n")
+
+        docs_2024 = vectordb.similarity_search(
+            query,
+            k=3,
+            filter={"rule_year": "ipl_2024"}
+        )
+
+        docs_2025 = vectordb.similarity_search(
+            query,
+            k=3,
+            filter={"rule_year": "ipl_2025"}
+        )
+
+        return docs_2024 + docs_2025
+
+    year = detect_rule_year(query)
+
+    print(f"Searching rules for: {year}\n")
+
+    results = vectordb.similarity_search(
+        query,
+        k=5,
+        filter={"rule_year": year}
+    )
+
+    return results
+
+
+# -------------------------------------------------
+# Ask Question
+# -------------------------------------------------
+
+def ask_question(query, vectordb):
+
+    docs = retrieve_documents(query, vectordb)
+
+    print("\n==============================")
+    print("RETRIEVED DOCUMENTS")
+    print("==============================\n")
+
+    for i, doc in enumerate(docs):
+
+        print(f"Result {i+1}")
+        print("Year:", doc.metadata["rule_year"])
+        print("Page:", doc.metadata["page"])
+        print("Section:", doc.metadata["section"])
+        print("-" * 40)
+
+        print(doc.page_content[:400])
+        print("\n")
+
+
+# -------------------------------------------------
+# Ingestion Pipeline
+# -------------------------------------------------
+
+def run_ingestion():
+
+    print("\nStarting ingestion pipeline...\n")
+
+    all_docs = []
+
+    for rule_year, pdf_path in PDF_FILES.items():
+
+        print(f"\nProcessing {rule_year}")
+
+        text_docs = extract_text(pdf_path, rule_year)
+        table_docs = extract_tables(pdf_path, rule_year)
+
+        text_chunks = chunk_text_documents(text_docs)
+
+        all_docs.extend(text_chunks)
+        all_docs.extend(table_docs)
+
+    embeddings = load_embedding_model()
+
+    vectordb = store_in_chroma(all_docs, embeddings)
+
+    print("\nVector DB created successfully\n")
 
     return vectordb
 
 
-# ----------------------------------------
-# Retrieval test
-# ----------------------------------------
-
-def test_retrieval(vectordb):
-    """
-    Simple verification query.
-    """
-
-    query = "What are the latest rules for eligibility?"
-
-    results = vectordb.similarity_search(query, k=3)
-
-    print("\n=============================")
-    print("RETRIEVAL TEST RESULTS")
-    print("=============================\n")
-
-    for i, doc in enumerate(results):
-
-        print(f"Result {i+1}")
-        print(f"Page:", doc.metadata["page"])
-        print(f"Type:", doc.metadata["chunk_type"])
-        print(f"Section:", doc.metadata["section"])
-        print("-" * 50)
-        print(doc.page_content[:600])
-        print("\n")
-
-
-# ----------------------------------------
-# Main pipeline
-# ----------------------------------------
-
-def run_rag_pipeline():
-
-    if not os.path.exists(PDF_PATH):
-        raise FileNotFoundError(f"PDF not found at {PDF_PATH}")
-
-    print("\nStarting PDF ingestion pipeline...\n")
-
-    # Extract
-    text_docs = extract_text(PDF_PATH)
-    table_docs = extract_tables(PDF_PATH)
-
-    print(f"\nText pages extracted: {len(text_docs)}")
-    print(f"Tables extracted: {len(table_docs)}")
-
-    # Chunk text
-    text_chunks = chunk_text_documents(text_docs)
-
-    print(f"\nText chunks created: {len(text_chunks)}")
-
-    # Combine
-    all_docs = text_chunks + table_docs
-
-    print(f"\nTotal chunks to embed: {len(all_docs)}")
-
-    # Load embedding model
-    embeddings = load_embedding_model()
-
-    # Store in Chroma
-    vectordb = store_in_chroma(all_docs, embeddings)
-
-    print("\nVector database created successfully.")
-
-    # Run retrieval test
-    test_retrieval(vectordb)
-
-
-# ----------------------------------------
-# Entry point
-# ----------------------------------------
+# -------------------------------------------------
+# Main
+# -------------------------------------------------
 
 if __name__ == "__main__":
-    run_rag_pipeline()
+
+    vectordb = run_ingestion()
+
+    while True:
+
+        query = input("\nAsk question (type 'exit' to quit): ")
+
+        if query.lower() == "exit":
+            break
+
+        ask_question(query, vectordb)

@@ -1,6 +1,7 @@
 langchain
 langchain-community
 langchain-chroma
+langchain_openai
 langchain-text-splitters
 chromadb
 sentence-transformers
@@ -9,3 +10,5 @@ pdfplumber
 tqdm
 openai
 gradio
+fitz 
+
