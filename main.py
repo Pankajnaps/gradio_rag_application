@@ -14,24 +14,54 @@ from rag_pipeline import run_ingestion, retrieve_documents
 
 load_dotenv()
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
+#client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = OpenAI(
+    api_key=os.getenv("OPEN_ROUTER_API_KEY"),
+    base_url="https://openrouter.ai/api/v1"
+)
 
 # -------------------------------------------------
 # OpenAI Chat Function
 # -------------------------------------------------
 
+# def chat_with_openai(prompt):
+
+#     response = client.chat.completions.create(
+#         model="gpt-4o-mini",
+#         messages=[
+#             {"role": "user", "content": prompt}
+#         ],
+#         temperature=0
+#     )
+
+#     return response.choices[0].message.content
+
+
+# -------------------------------------------------
+# Openrouter Chat Function
+# -------------------------------------------------
+
 def chat_with_openai(prompt):
 
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0
-    )
+    models = [
+        "openai/gpt-oss-120b:free",
+        "google/gemma-4-26b-a4b-it:free",
+        "google/gemma-3-4b-it:free"
+    ]
 
-    return response.choices[0].message.content
+    for model in models:
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0
+            )
+            return response.choices[0].message.content
+
+        except Exception as e:
+            print(f"Model {model} failed: {e}")
+
+    return "All models are currently unavailable. Please try again later."
 
 
 # -------------------------------------------------
